@@ -2,20 +2,16 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 from glob import glob
 from PIL import Image
+import matplotlib.pyplot as plt
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img
-from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import resample
-from sklearn.metrics import confusion_matrix
 
 import streamlit as st
 
@@ -29,10 +25,17 @@ MODEL_PATH = "best_ham10000_cnn.h5"
 # LOAD + PREPARE DATA
 # ===============================
 @st.cache_data
-def load_metadata():
+def load_metadata(uploaded_file=None):
     meta_path = "HAM10000_metadata.csv"
-    skin_df = pd.read_csv(meta_path)
 
+    if uploaded_file is not None:
+        skin_df = pd.read_csv(uploaded_file)
+    elif os.path.exists(meta_path):
+        skin_df = pd.read_csv(meta_path)
+    else:
+        return None, None
+
+    # Encode labels
     le = LabelEncoder()
     skin_df['label'] = le.fit_transform(skin_df['dx'])
 
@@ -45,7 +48,7 @@ def load_metadata():
 
     skin_df_balanced = pd.concat(dfs)
 
-    # Map image paths
+    # Map image paths (optional, if dataset images exist)
     all_images = glob("**/*.jpg", recursive=True)
     image_path = {os.path.splitext(os.path.basename(x))[0]: x for x in all_images}
     skin_df_balanced['path'] = skin_df_balanced['image_id'].map(image_path.get)
@@ -119,18 +122,24 @@ def predict_image(model, image, le, threshold=0.5):
 # ===============================
 st.title("🩺 Skin Cancer Classification (HAM10000)")
 
-skin_df_balanced, le = load_metadata()
-model = get_model()
+# Upload metadata file
+uploaded_csv = st.file_uploader("Upload HAM10000_metadata.csv", type=["csv"])
+skin_df_balanced, le = load_metadata(uploaded_csv)
 
-st.markdown("Upload a skin lesion image and get predictions.")
+if skin_df_balanced is None:
+    st.error("⚠️ Metadata file not found. Please upload HAM10000_metadata.csv.")
+else:
+    model = get_model()
 
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Image", use_column_width=True)
+    st.markdown("Upload a skin lesion image and get predictions.")
 
-    label, conf, stage, precautions = predict_image(model, image, le)
+    uploaded_file = st.file_uploader("Upload Skin Lesion Image", type=["jpg", "png", "jpeg"])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file).convert("RGB")
+        st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    st.success(f"Prediction: **{label}** ({conf:.2f} confidence)")
-    st.info(f"Stage: {stage}")
-    st.warning(f"Precautions: {precautions}")
+        label, conf, stage, precautions = predict_image(model, image, le)
+
+        st.success(f"Prediction: **{label}** ({conf:.2f} confidence)")
+        st.info(f"Stage: {stage}")
+        st.warning(f"Precautions: {precautions}")
