@@ -2,14 +2,17 @@
 import os
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from glob import glob
 from PIL import Image
-import matplotlib.pyplot as plt
+import pickle
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
 from tensorflow.keras.preprocessing.image import img_to_array, load_img
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import resample
 
@@ -20,22 +23,20 @@ import streamlit as st
 # ===============================
 SIZE = 32
 MODEL_PATH = "best_ham10000_cnn.h5"
+ENCODER_PATH = "label_encoder.pkl"
 
 # ===============================
 # LOAD + PREPARE DATA
 # ===============================
 @st.cache_data
-def load_metadata(uploaded_file=None):
+def load_metadata():
     meta_path = "HAM10000_metadata.csv"
-
-    if uploaded_file is not None:
-        skin_df = pd.read_csv(uploaded_file)
-    elif os.path.exists(meta_path):
-        skin_df = pd.read_csv(meta_path)
-    else:
+    if not os.path.exists(meta_path):
+        st.error("❌ HAM10000_metadata.csv not found. Please upload or add it to repo.")
         return None, None
 
-    # Encode labels
+    skin_df = pd.read_csv(meta_path)
+
     le = LabelEncoder()
     skin_df['label'] = le.fit_transform(skin_df['dx'])
 
@@ -48,7 +49,7 @@ def load_metadata(uploaded_file=None):
 
     skin_df_balanced = pd.concat(dfs)
 
-    # Map image paths (optional, if dataset images exist)
+    # Map image paths
     all_images = glob("**/*.jpg", recursive=True)
     image_path = {os.path.splitext(os.path.basename(x))[0]: x for x in all_images}
     skin_df_balanced['path'] = skin_df_balanced['image_id'].map(image_path.get)
@@ -57,7 +58,7 @@ def load_metadata(uploaded_file=None):
     return skin_df_balanced, le
 
 # ===============================
-# BUILD / LOAD MODEL
+# MODEL FUNCTIONS
 # ===============================
 def build_model():
     model = Sequential([
@@ -81,10 +82,37 @@ def build_model():
     model.compile(loss="categorical_crossentropy", optimizer="Adam", metrics=["accuracy"])
     return model
 
-def get_model():
-    if os.path.exists(MODEL_PATH):
-        return load_model(MODEL_PATH)
-    return build_model()
+def train_model(skin_df_balanced, le):
+    X, y = [], []
+    for path, label in zip(skin_df_balanced['path'], skin_df_balanced['label']):
+        img = load_img(path, target_size=(SIZE, SIZE))
+        img_array = img_to_array(img) / 255.0
+        X.append(img_array)
+        y.append(label)
+
+    X = np.array(X)
+    y = tf.keras.utils.to_categorical(y, num_classes=len(le.classes_))
+
+    model = build_model()
+    model.fit(X, y, epochs=5, batch_size=32, validation_split=0.2)
+
+    model.save(MODEL_PATH)
+    with open(ENCODER_PATH, "wb") as f:
+        pickle.dump(le, f)
+
+    return model
+
+def get_model_and_encoder(skin_df_balanced, le):
+    # Load model if available
+    if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
+        model = load_model(MODEL_PATH)
+        with open(ENCODER_PATH, "rb") as f:
+            le = pickle.load(f)
+        return model, le
+    else:
+        st.warning("⚠️ No pre-trained model found. Training a new one (this may take time)…")
+        model = train_model(skin_df_balanced, le)
+        return model, le
 
 # ===============================
 # PREDICTION FUNCTION
@@ -122,18 +150,13 @@ def predict_image(model, image, le, threshold=0.5):
 # ===============================
 st.title("🩺 Skin Cancer Classification (HAM10000)")
 
-# Upload metadata file
-uploaded_csv = st.file_uploader("Upload HAM10000_metadata.csv", type=["csv"])
-skin_df_balanced, le = load_metadata(uploaded_csv)
-
-if skin_df_balanced is None:
-    st.error("⚠️ Metadata file not found. Please upload HAM10000_metadata.csv.")
-else:
-    model = get_model()
+skin_df_balanced, le = load_metadata()
+if skin_df_balanced is not None:
+    model, le = get_model_and_encoder(skin_df_balanced, le)
 
     st.markdown("Upload a skin lesion image and get predictions.")
 
-    uploaded_file = st.file_uploader("Upload Skin Lesion Image", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
     if uploaded_file is not None:
         image = Image.open(uploaded_file).convert("RGB")
         st.image(image, caption="Uploaded Image", use_column_width=True)
